@@ -571,7 +571,7 @@ class ILLUMEplus(torch.nn.Module):
             self.model.eval()
             X = self.model.decode(torch.tensor(Z).float().to(device), W)
             X = torch.cat([ (X[:,idx]==X[:,idx].max(dim=1).values[:,None]).float() if len(idx)>1 else X[:,idx] for idx in self.idx_num_cat], axis=1)
-    return X.cpu().detach().numpy()
+        return X.cpu().detach().numpy()
 
     def _latent_update(self, xi, xnn, Wi, Wnn, clf):
 
