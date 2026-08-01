@@ -13,7 +13,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neighbors import KNeighborsClassifier
 
-from rule import get_rule, get_counterfactual_rules_all
+from .rule import get_rule, get_counterfactual_rules_all
 
 
 def decode_latent_rule(w_latent, expl_binary):

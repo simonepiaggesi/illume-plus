@@ -4,19 +4,19 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.ops import MLP
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 import time
 import os
 import tempfile
 
-import pickle
 from sklearn.preprocessing import OrdinalEncoder, MinMaxScaler, OneHotEncoder
 from sklearn.model_selection import train_test_split
 
-from utils import linear_eval, tree_eval
-from expl_utils import get_rule_explanation_all, get_crule_explanation_all, decode_latent_rule_complete, inverse_transform_rule_complete, fix_cat_rule_complete, simplify_rule_complete
+from .utils import linear_eval, tree_eval
+from .expl_utils import (get_rule_explanation_all, get_crule_explanation_all,
+                         decode_latent_rule_complete, fix_cat_rule_complete,
+                         simplify_rule_complete)
 from scipy.spatial.distance import cdist
 
 from more_itertools import random_combination
@@ -58,9 +58,11 @@ class LoRaLocalLinearAutoEnc(nn.Module):
         w_norm = w/torch.norm(w, p=2, dim=-1)[:,:,None]
         z = torch.bmm(torch.unsqueeze(x, dim=1), torch.transpose(w_norm, 1,2))[:, 0, :]
         return w_norm, z
-    def decode(self, z):
-        x_hat = torch.bmm(torch.unsqueeze(z, dim=1), self.weight)[:, 0, :]
-        return x_hat
+
+    def decode(self, z, w=None):
+        w = self.weight if w is None else w
+        return torch.bmm(torch.unsqueeze(z, dim=1), w)[:, 0, :]
+
     def forward(self, x, num_k_sparse=None):
         w, z = self.encode(x, num_k_sparse)
         x_hat = self.decode(z)
@@ -376,7 +378,7 @@ class ILLUMEplus(torch.nn.Module):
                    'weight_names': [['w_'+str(i)+'_'+str(j) for j in range(self.X_train.shape[1])] for i in range(self.Z_train.shape[1])],
                    'class_name': 'class',
                    'class_values': [0,1],
-                   'numeric_columns':['z'+str(i) for i in self.idx_num],
+                   'numeric_columns': ['z'+str(i) for i in range(self.Z_train.shape[1])],
                    'X_val':self.Z_val,
                    'Y_val':self.y_val_bb,
                 }
@@ -406,7 +408,7 @@ class ILLUMEplus(torch.nn.Module):
                'weight_names': [['w_'+str(i)+'_'+str(j) for j in range(self.X_train.shape[1])] for i in range(self.Z_train.shape[1])],
                'class_name': 'class',
                'class_values': [0,1],
-               'numeric_columns':['z'+str(i) for i in self.idx_num],
+               'numeric_columns': ['z'+str(i) for i in range(self.Z_train.shape[1])],
                'X_val':self.Z_val,
                'Y_val':self.y_val_bb,
                 }
@@ -473,6 +475,8 @@ class ILLUMEplus(torch.nn.Module):
         epoch_val_losses = []
         epoch = 1
         best = np.inf
+        wait = 0                
+        saved = False
         # progress bar
         pbar = tqdm(bar_format="{postfix[0]} {postfix[1][value]:03d} {postfix[2]} {postfix[3][value]:.5f} {postfix[4]} {postfix[5][value]:.5f} {postfix[6]} {postfix[7][value]:d}",
             postfix=["Epoch:", {'value':0}, "Train Loss", {'value':0}, "Test Loss", {'value':0}, "Early Stopping", {"value":0}])
@@ -537,6 +541,7 @@ class ILLUMEplus(torch.nn.Module):
                         best_epoch = epoch
                         torch.save(self.model.state_dict(), dname+'/ModelTemp.pt')
                         torch.save(self.optimizer.state_dict(), dname+'/OptTemp.pt')
+                        saved = True
                     else:
                         wait += 1
                     pbar.postfix[7]["value"] = wait
@@ -544,8 +549,13 @@ class ILLUMEplus(torch.nn.Module):
                         break    
                 epoch += 1
                 pbar.update()
-            self.model.load_state_dict(torch.load(dname+'/ModelTemp.pt'))
-            self.optimizer.load_state_dict(torch.load(dname+'/OptTemp.pt'))
+            if saved:
+                self.model.load_state_dict(torch.load(dname+'/ModelTemp.pt'))
+                self.optimizer.load_state_dict(torch.load(dname+'/OptTemp.pt'))
+            else:
+                print('Warning: no checkpoint improved on the initial loss; '
+                      'keeping the final weights.')
+        pbar.close()
 
         return epoch_train_losses, epoch_val_losses
 
@@ -555,12 +565,13 @@ class ILLUMEplus(torch.nn.Module):
             W, Z = self.model.encode(torch.tensor(X).float().to(device), num_k_sparse)
         return W.cpu().detach().numpy(), Z.cpu().detach().numpy() 
 
-    def inverse_transform(self, Z):
+    def inverse_transform(self, Z, W=None):
+        W = None if W is None else torch.tensor(W).float().to(device)
         with torch.no_grad():
             self.model.eval()
-            X = self.model.decode(torch.tensor(Z).float().to(device))
+            X = self.model.decode(torch.tensor(Z).float().to(device), W)
             X = torch.cat([ (X[:,idx]==X[:,idx].max(dim=1).values[:,None]).float() if len(idx)>1 else X[:,idx] for idx in self.idx_num_cat], axis=1)
-        return X.cpu().detach().numpy() 
+    return X.cpu().detach().numpy()
 
     def _latent_update(self, xi, xnn, Wi, Wnn, clf):
 

@@ -5,7 +5,7 @@ from sklearn.preprocessing import StandardScaler
 
 def load_instance_names(X_file):
     """
-    Load instance names from X files (train_X, test_X, val_X).
+    Load instance names from X files (train_X, test_X, valid_X).
     Files contain just instance names, one per row, no headers.
     """
     print(f"Loading instance names from {X_file}...")
@@ -67,7 +67,8 @@ def load_transcriptomics_data(transcriptomics_file='transcriptomics.feather'):
     # Set first column (instance names) as index for easy lookup
     instance_col = transcriptomics.columns[0]
     transcriptomics_indexed = transcriptomics.set_index(instance_col)
-    transcriptomics_indexed.drop('Source', axis = 1, inplace=True)
+    # transcriptomics_indexed.drop('Source', axis = 1, inplace=True)
+    transcriptomics_indexed = transcriptomics_indexed.drop(columns='Source', errors='ignore')
     
     return transcriptomics_indexed
 
@@ -105,8 +106,10 @@ def create_feature_matrix(instance_names, transcriptomics_indexed, ordered_featu
     
     # print(f"Instances found: {len(available_instances)} out of {len(instance_names)}")
     if missing_instances:
-        print(f"Missing instances: {len(missing_instances)}")
-        exit()
+        raise ValueError(
+            f"{len(missing_instances)} cell lines in the splits are absent from the "
+            f"transcriptomics table, e.g. {missing_instances[:5]}"
+        )
     else:
         print("All cell lines (instances) in splits are in transcriptomics")
     
@@ -228,9 +231,10 @@ def filter_transcriptomics_by_genes(transcriptomics_indexed, top_genes):
     
     print(f"Top genes found: {len(available_top_genes)} out of {len(top_genes)}")
     if missing_top_genes:
-        print(f"There are genes in the feature columns which are not in the transcriptomics data: {len(missing_top_genes)}")
-        print(f"First few missing: {missing_top_genes[:3]}")
-        exit()
+        raise ValueError(
+            f"{len(missing_top_genes)} Boruta-selected genes are absent from the "
+            f"transcriptomics table, e.g. {missing_top_genes[:5]}"
+        )
     
     # Create filtered dataset: keep instance column + dataset column + selected genes
     columns_to_keep = available_top_genes # [transcriptomics_indexed.columns[0]] + available_top_genes  # dataset column + genes
