@@ -1,23 +1,45 @@
+# Temporary directories
 **/tmp*/
 **/temp*/
 
-# model checkpoints
+# Local Python environments
+.venv/
+venv/
+
+# Python caches and test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build output
+build/
+dist/
+*.egg-info/
+*.dist-info/
+
+# Model checkpoints
 *.pt
 *.pth
 *.ckpt
 *.h5
 
-# data dumps
+# Generated data
 *.npz
 *.npy
 *.feather
 *.parquet
 
-# stdout / stderr
+# Standard output and error files
 *.out
 *.err
 
-# python cache
-__pycache__/
-*.pyc
+# Notebooks and editors
 .ipynb_checkpoints/
+.vscode/
+.idea/
+.DS_Store

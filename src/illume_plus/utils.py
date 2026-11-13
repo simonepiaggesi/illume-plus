@@ -23,8 +23,6 @@ from sklearn.cluster import KMeans
 from numpy.linalg import norm
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder, StandardScaler
 
-import optuna
-from lightgbm import LGBMClassifier
 from sklearn.pipeline import Pipeline
 
 
@@ -36,6 +34,9 @@ def lgbm_optuna_eval(
     random_state=42,
     n_jobs=4
 ):
+    import optuna
+    from lightgbm import LGBMClassifier
+
     n_classes = len(np.unique(y_train))
 
     cv = StratifiedKFold(

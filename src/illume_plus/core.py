@@ -37,6 +37,18 @@ class LoRaLocalLinearAutoEnc(nn.Module):
         [arxiv:1609.09106](https://arxiv.org/abs/1609.09106)
     '''
     def __init__(self, input_dim, latent_dim, rank_dim):
+
+        """Build an low-rank encoder for input_dim features and latent_dim projections.
+
+        Args:
+            input_dim: Number of input features.
+            latent_dim: Number of latent features.
+            rank_dim: Rank dimension.
+
+        Returns:
+            None; initializes the encoder.
+        """
+
         super(LoRaLocalLinearAutoEnc, self).__init__()
 
         self.input_dim = input_dim
@@ -53,21 +65,61 @@ class LoRaLocalLinearAutoEnc(nn.Module):
         return torch.stack(out, dim=0)
 
     def encode(self, x, num_k=None):
+        """Project input rows into a local latent space.
+
+        Args:
+            x: Tensor of shape (batch, input_dim).
+            num_k: Optional number of coefficients retained per projection.
+
+        Returns:
+            Normalized weights (batch, latent_dim, input_dim) and codes (batch, latent_dim).
+        """
+
         self.weight = torch.transpose(self._compose_encoder(x), 0, 1)
         w = self.get_weight(self.weight, num_k)
         w_norm = w/torch.norm(w, p=2, dim=-1)[:,:,None]
         z = torch.bmm(torch.unsqueeze(x, dim=1), torch.transpose(w_norm, 1,2))[:, 0, :]
         return w_norm, z
 
-    def decode(self, z, w=None):
-        w = self.weight if w is None else w
-        return torch.bmm(torch.unsqueeze(z, dim=1), w)[:, 0, :]
+    def decode(self, z, decoder_weights=None):
+        """Reconstruct input rows from latent codes.
+
+        Args:
+            z: Codes of shape (batch, latent_dim).
+            decoder_weights: Optional weights of shape (batch, latent_dim, input_dim);
+                defaults to the weights from the latest encode call.
+
+        Returns:
+            Reconstructed tensor of shape (batch, input_dim).
+        """
+        weights = self.weight if decoder_weights is None else decoder_weights
+        x_hat = torch.bmm(torch.unsqueeze(z, dim=1), weights)[:, 0, :]
+        return x_hat
 
     def forward(self, x, num_k_sparse=None):
+        """Encode and reconstruct a batch.
+
+        Args:
+            x: Input tensor of shape (batch, input_dim).
+            num_k_sparse: Optional retained coefficients per projection.
+
+        Returns:
+            Reconstructed tensor of shape (batch, input_dim).
+        """
         w, z = self.encode(x, num_k_sparse)
         x_hat = self.decode(z)
         return x_hat    
+
     def get_weight(self, w_batch, num_k=None):
+        """Apply a straight-through top-k mask to projection weights.
+
+        Args:
+            w_batch: Weights of shape (batch, latent_dim, input_dim).
+            num_k: Coefficients retained per projection, or None for all.
+
+        Returns:
+            Weight tensor with the same shape.
+        """
         if num_k == None or num_k >= self.input_dim:
             return w_batch
         else:
@@ -75,14 +127,33 @@ class LoRaLocalLinearAutoEnc(nn.Module):
             mask_batch = torch.zeros_like(w_batch)
             mask_batch.scatter_(2, indices, 1)
             masked_weight = torch.mul(w_batch, mask_batch)
-            return masked_weight
-            
+            #return masked_weight
+            return w_batch + (masked_weight - w_batch).detach()
+
 def compute_similarity_z(Z, sigma=1):
+    """Compute row-normalized latent-code similarities.
+
+    Args:
+        Z: Latent codes of shape (batch, latent_dim).
+        sigma: Gaussian kernel width.
+
+    Returns:
+        Similarity tensor of shape (batch, batch).
+    """
     D = 1 - F.cosine_similarity(Z[:, None, :], Z[None, :, :], dim=-1)
     M = torch.exp((-D**2)/(2*sigma**2))
     return M / (torch.ones([M.shape[0],M.shape[1]]).to(device)*(torch.sum(M, axis = 0))).transpose(0,1)
 
 def compute_similarity_w(W, sigma=1):
+    """Compute row-normalized projection-weight similarities.
+
+    Args:
+        W: Weights of shape (batch, latent_dim, input_dim).
+        sigma: Gaussian kernel width.
+
+    Returns:
+        Similarity tensor of shape (batch, batch).
+    """
     D = 1 - torch.matmul(W[:,0,:], W[:,0,:].T)
     for l in range(1, W.shape[1]):
         D += 1 - torch.matmul(W[:,l,:], W[:,l,:].T)
@@ -92,14 +163,31 @@ def compute_similarity_w(W, sigma=1):
     return M / (torch.ones([M.shape[0],M.shape[1]]).to(device)*(torch.sum(M, axis = 0))).transpose(0,1)
 
 def compute_similarity_y(y, sigma=1):
+    """Compute row-normalized label similarities.
+
+    Args:
+        y: Label vectors of shape (batch, n_classes).
+        sigma: Gaussian kernel width.
+
+    Returns:
+        Similarity tensor of shape (batch, batch).
+    """
     D = torch.cdist(y, y)
+    # D = 1 - F.cosine_similarity(y[:, None, :], y[None, :, :], dim=-1)
     M = torch.exp((-D**2)/(2*sigma**2))
     return M / (torch.ones([M.shape[0],M.shape[1]]).to(device)*(torch.sum(M, axis = 0))).transpose(0,1)
 
-def compute_similarity_x(X, y=None, idx_cat=None, sigma=1):
-    if y:
-        D_class = torch.cdist(X[:,-y:], X[:,-y:])
-        X = X[:, :-y]
+def compute_similarity_x(X, idx_cat=None, sigma=1):
+    """Compute row-normalized input similarities.
+
+    Args:
+        X: Input tensor of shape (batch, input_dim).
+        idx_cat: Optional categorical feature indices.
+        sigma: Gaussian kernel width.
+
+    Returns:
+        Similarity tensor of shape (batch, batch).
+    """
     if idx_cat:
         X_cat = X[:, idx_cat]
         X_cont = X[:, np.delete(range(X.shape[1]), idx_cat)]
@@ -112,26 +200,22 @@ def compute_similarity_x(X, y=None, idx_cat=None, sigma=1):
             D += ((m-h)/m) * D_cont
     else:
         D = 1 - F.cosine_similarity(X[:, None, :], X[None, :, :], dim=-1) 
-    if y:
-        D += D_class
     M = torch.exp((-D**2)/(2*sigma**2))
     return M / (torch.ones([M.shape[0],M.shape[1]]).to(device)*(torch.sum(M, axis = 0))).transpose(0,1)
 
 
-def kld_loss_function_zxy(X, Z, y, idx_cat=None, sigma=1):
-    similarity_KLD = torch.nn.KLDivLoss(reduction='batchmean')
-    Sx = compute_similarity_x(X, None, idx_cat, sigma)
-    Sz = compute_similarity_z(Z, sigma)
-    loss = similarity_KLD(torch.log(Sz), Sx)
-    if not torch.any(torch.isnan(y)):
-        Sy = compute_similarity_y(y, sigma)
-        loss += similarity_KLD(torch.log(Sz), Sy)
-    return loss
-
-
 def kld_loss_function_wxyz(X, W, Z, y, idx_cat=None, sigma=1):
+    """Align input, weight, latent, and available label similarities.
+
+    Args:
+        X: Input batch; W: projection weights; Z: latent codes; y: labels.
+        idx_cat: Optional categorical indices; sigma: kernel width.
+
+    Returns:
+        Scalar sum of KL-divergence losses.
+    """
     similarity_KLD = torch.nn.KLDivLoss(reduction='batchmean')
-    Sx = compute_similarity_x(X, None, idx_cat, sigma)
+    Sx = compute_similarity_x(X, idx_cat, sigma)
     Sw = compute_similarity_w(W, sigma)
     Sz = compute_similarity_z(Z, sigma)
 
@@ -142,12 +226,36 @@ def kld_loss_function_wxyz(X, W, Z, y, idx_cat=None, sigma=1):
     return loss
 
 def orth_loss_function(Q):
+    """Penalize deviation of weight Gram matrices from identity.
+
+    Args:
+        Q: Batched square Gram matrices of latent projections.
+
+    Returns:
+        Scalar mean-squared penalty tensor.
+    """
     loss = ((Q - torch.eye(Q.shape[1]).to(device))**2).mean(dim=[1,2]).mean()
     return loss
 
 def corr_loss_function(Z):
 
+    """Penalize correlation among latent dimensions.
+
+    Args:
+        Z: Latent codes of shape (batch, latent_dim).
+
+    Returns:
+        Scalar correlation penalty tensor.
+    """
     def pearson_matrix(X):
+        """Compute normalized cross-products for latent columns.
+
+        Args:
+            X: Tensor of shape (batch, latent_dim).
+
+        Returns:
+            Tensor of shape (1, latent_dim, latent_dim).
+        """
         return torch.mm(batch_norm(X, 0).T, batch_norm(X, 0))[None,:,:]/X.shape[0]
 
     C = pearson_matrix(Z)
@@ -156,6 +264,15 @@ def corr_loss_function(Z):
     return loss
 
 def rec_loss_function(X, X_hat, idx_cat_lol):
+    """Measure reconstruction error for numeric and categorical groups.
+
+    Args:
+        X: Input batch; X_hat: reconstructed batch.
+        idx_cat_lol: Lists of one-hot column indices for categorical features.
+
+    Returns:
+        Scalar reconstruction loss tensor.
+    """
     if len(idx_cat_lol)>0:
         loss = torch.mean(torch.cat([F.cross_entropy(X_hat[:,idx], X[:,idx], reduction='none')[:, None]
                             for idx in idx_cat_lol], axis=1), axis=1).mean()
@@ -170,7 +287,8 @@ def rec_loss_function(X, X_hat, idx_cat_lol):
     return loss
 
 
-def compute_jacobian_eff(x, fx, n=15):
+
+def compute_jacobian(x, fx, n=1):
     '''
     Copyright (c) Facebook, Inc. and its affiliates.
 
@@ -178,6 +296,8 @@ def compute_jacobian_eff(x, fx, n=15):
     LICENSE file in the root directory of this source tree.
     
     PyTorch implementation of Jacobian regularization described in [1].
+
+    Source: https://github.com/facebookresearch/jacobian_regularizer
 
     [1] Judy Hoffman, Daniel A. Roberts, and Sho Yaida,
         "Robust Learning with Jacobian Regularization," 2019.
@@ -246,18 +366,29 @@ def batch_norm(X, axis=0):
 
 
 class ILLUMEplus(torch.nn.Module):
-    def __init__(self, latent_dim=2, 
-                 rank_dim=None,
-                 max_epochs=1000, 
-                 early_stopping=30, 
-                 learning_rate=0.001, 
-                 batch_size=1024, 
-                 sigma=1):
+    def __init__(self, latent_dim=2, rank_dim=None, nj_proj=1,
+                 max_epochs=1000, early_stopping=30, 
+                 learning_rate=0.001, batch_size=1024, sigma=1):
+        
+        """Configure an ILLUME model; data is supplied by fit or load.
+
+        Args:
+            latent_dim: Latent features (at least two). 
+            rank_dim: dimension of the low-rank layer.
+            nj_proj: Jacobian projection count.
+            max_epochs: Training limit. 
+            early_stopping: patience in epochs.
+            learning_rate: Adam step size. 
+            batch_size: samples per batch.
+            sigma: Similarity kernel width.
+
+        """
         super().__init__()
 
 
         self.latent_dim=latent_dim
         self.rank_dim=rank_dim
+        self.nj=nj_proj
 
         self.max_epochs=max_epochs
         self.early_stopping=early_stopping
@@ -266,7 +397,26 @@ class ILLUMEplus(torch.nn.Module):
         self.batch_size=batch_size
         self.sigma=sigma
 
+        if latent_dim < 2:
+            raise ValueError("latent_dim must be an integer greater than 1")
+        if rank_dim is not None and rank_dim < 1:
+            raise ValueError("rank_dim must be an integer greater than 0")
+        if sigma <= 0:
+            raise ValueError("sigm must be greater than 0")
+
     def _set(self, X, y, idx_num_cat, init_path=None):
+
+        """Initialize data, feature groups, model, and optimizer.
+
+        Args:
+            X: Pair of training and validation feature arrays.
+            y: Optional pair of label arrays; None denotes unavailable labels.
+            idx_num_cat: Feature-index groups, singletons for numeric features.
+            init_path: Optional path to saved model weights.
+
+        Returns:
+            None; updates the instance state.
+        """
 
         self.X_train, self.X_val = X
 
@@ -304,6 +454,16 @@ class ILLUMEplus(torch.nn.Module):
 
     def load(self, X, y, idx_num_cat, init_path):
 
+        """Initialize the model from saved weights and supplied data.
+
+        Args:
+            X: Training and validation feature arrays; y: their label arrays.
+            idx_num_cat: Feature-index groups; init_path: weights file path.
+
+        Returns:
+            None; populates the model state.
+        """
+
         self._set(X, y, idx_num_cat, init_path)
 
 
@@ -311,9 +471,23 @@ class ILLUMEplus(torch.nn.Module):
             params_dict={'num_k':None, 'l_rec':1.0, 'l_kld':1.0, 'l_so':1.0, 'l_co':1.0, 'l_st':1.0}, 
             init_path=None, seed=None):
 
+        """Fit the encoder and retain training projections.
+
+        Args:
+            X: Training and validation feature arrays; y: optional label arrays.
+            idx_num_cat: Feature-index groups, singletons for numeric features.
+            params_dict: Sparsity setting num_k and five loss weights.
+            init_path: Optional initial weights; seed: optional random seed.
+
+        Returns:
+            Training and validation loss histories; each epoch records
+            (reconstruction, KL, orthogonality, correlation, Jacobian, total).
+        """
+
         self._set(X, y, idx_num_cat, init_path)
 
         if seed:
+            random.seed(seed)
             np.random.seed(seed)
             torch.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
@@ -357,6 +531,16 @@ class ILLUMEplus(torch.nn.Module):
 
     def explain_linear(self, class_label=1, num_k=None):
 
+        """Fit a binary logistic surrogate in latent space.
+
+        Args:
+            class_label: Class index treated as positive.
+            num_k: Optional retained coefficients per projection.
+
+        Returns:
+            None; stores the surrogate and its training data.
+        """
+
         self.W_train, self.Z_train = self.transform(self.X_train, num_k_sparse=num_k)
         self.W_val, self.Z_val = self.transform(self.X_val, num_k_sparse=num_k)
 
@@ -386,6 +570,16 @@ class ILLUMEplus(torch.nn.Module):
         return
 
     def explain_dectree(self, class_label=1, num_k=None):
+
+        """Fit a binary decision-tree surrogate in latent space.
+
+        Args:
+            class_label: Class index treated as positive.
+            num_k: Optional retained coefficients per projection.
+
+        Returns:
+            None; stores the surrogate and its training data.
+        """
 
         self.W_train, self.Z_train = self.transform(self.X_train, num_k_sparse=num_k)
         self.W_val, self.Z_val = self.transform(self.X_val, num_k_sparse=num_k)
@@ -417,11 +611,29 @@ class ILLUMEplus(torch.nn.Module):
 
     def _get_feature_importance_training(self):
 
+        """Map surrogate coefficients to original training features.
+
+        Args:
+            None; uses the fitted logistic surrogate and training weights.
+
+        Returns:
+            Feature-importance array of shape (n_train, input_dim).
+        """
+
         ex_train = (self.logreg.coef_[None,:,:].transpose(0,2,1)*self.W_train).sum(axis=1)
 
         return ex_train
 
     def _get_rules_training(self):
+
+        """Decode training decision rules into input features.
+
+        Args:
+            None; uses the fitted decision-tree surrogate.
+
+        Returns:
+            List of decoded rule dictionaries, one per training row.
+        """
 
         _, ez_dict_training = get_rule_explanation_all(self.Z_train, self.dtd, n_features=self.latent_dim)
 
@@ -431,6 +643,15 @@ class ILLUMEplus(torch.nn.Module):
         return ex_dict_training
 
     def _get_crules_training(self):
+
+        """Find training counterfactual rules and source rows.
+
+        Args:
+            None; uses the fitted decision-tree surrogate.
+
+        Returns:
+            Counterfactual rule dictionaries and matching training-row arrays.
+        """
 
         cond_train = self.dtree.predict(self.Z_train)==self.y_train_bb
 
@@ -442,26 +663,73 @@ class ILLUMEplus(torch.nn.Module):
 
         return cx_dict_training, cf_list_training
     
-    def _step(self, X_batch, Y_batch, num_k):
+    def _step(self, X_batch, Y_batch, num_k, with_grads=True, lambda_tuple=None):
+
+        """Compute the five component losses for one batch.
+
+        Args:
+            X_batch: Feature tensor; Y_batch: label tensor.
+            num_k: Optional sparse coefficient count.
+            with_grads: Gradient flag for zero-valued loss placeholders.
+            lambda_tuple: Optional weights enabling each loss component.
+
+        Returns:
+            Scalar tensors for reconstruction, KL, orthogonality,
+            correlation, and Jacobian losses, in that order.
+        """
+
+        if lambda_tuple is None:
+            l_rec, l_kld, l_orth, l_corr, l_jac = (1.0, 1.0, 1.0, 1.0, 1.0)
+        else:
+            l_rec, l_kld, l_orth, l_corr, l_jac = lambda_tuple
     
         X_batch.requires_grad_(True)
         W_batch, Z_batch = self.model.encode(X_batch, num_k)
-        
-        jac_loss = compute_jacobian_eff(X_batch, Z_batch - torch.bmm(torch.unsqueeze(X_batch, dim=1), torch.transpose(W_batch.detach(), 1,2)).squeeze())/(self.latent_dim*self.input_dim)
 
-        kld_loss = kld_loss_function_wxyz(X_batch, W_batch, Z_batch, Y_batch, self.idx_cat, self.sigma)
-    
-        orth_loss = orth_loss_function(torch.bmm(torch.abs(W_batch), 
+        if l_jac==0.0:
+            jac_loss = torch.tensor(0., requires_grad=with_grads)
+        else:
+            jac_loss = compute_jacobian(X_batch, Z_batch - torch.bmm(torch.unsqueeze(X_batch, dim=1), 
+                                            torch.transpose(W_batch.detach(), 1,2)).squeeze(), self.nj)/(self.latent_dim*self.input_dim)
+
+        if l_kld==0.0:
+            kld_loss = torch.tensor(0., requires_grad=with_grads)
+        else:
+            kld_loss = kld_loss_function_wxyz(X_batch, W_batch, Z_batch, Y_batch, self.idx_cat, self.sigma)
+
+        if l_orth==0.0:
+            orth_loss = torch.tensor(0., requires_grad=with_grads)
+        else:
+            orth_loss = orth_loss_function(torch.bmm(torch.abs(W_batch), 
                                   torch.transpose(torch.abs(W_batch), 1,2)))
-        corr_loss = corr_loss_function(Z_batch)
+
+        if l_corr==0.0:
+            corr_loss = torch.tensor(0., requires_grad=with_grads)
+        else:                       
+            corr_loss = corr_loss_function(Z_batch)
     
         X_hat = self.model.decode(Z_batch)
-        rec_loss = rec_loss_function(X_batch, X_hat, [idx for idx in self.idx_num_cat if len(idx)>1])
+        if l_rec==0.0:
+            rec_loss = torch.tensor(0., requires_grad=with_grads)
+        else: 
+            rec_loss = rec_loss_function(X_batch, X_hat, [idx for idx in self.idx_num_cat if len(idx)>1])
     
-        return rec_loss, kld_loss, orth_loss, corr_loss, jac_loss  
+        return rec_loss, kld_loss, orth_loss, corr_loss, jac_loss    
         
 
     def _train(self, num_k_list, lambdas, early_stop_from_epoch):
+
+        """Run training and validation across a sparsity schedule.
+
+        Args:
+            num_k_list: Sparse coefficient setting for each epoch.
+            lambdas: Five loss weights in _step order.
+            early_stop_from_epoch: First epoch eligible for checkpointing.
+
+        Returns:
+            Training and validation histories of six-value loss tuples.
+        """
+
 
         train_dataset = TensorDataset(torch.tensor(self.X_train).float().to(device), torch.tensor(self.y_train).float().to(device))
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True) 
@@ -490,8 +758,11 @@ class ILLUMEplus(torch.nn.Module):
                 batch_rec, batch_kld, batch_orth, batch_corr, batch_jac, batch_loss = [], [], [], [], [], []
                 for batch, (X_batch, Y_batch) in enumerate(train_loader):
 
+                    if X_batch.shape[0]==1:
+                        continue
+
                     self.optimizer.zero_grad()
-                    rec_loss, kld_loss, orth_loss, corr_loss, jac_loss = self._step(X_batch, Y_batch, k)
+                    rec_loss, kld_loss, orth_loss, corr_loss, jac_loss = self._step(X_batch, Y_batch, k, True, lambdas)
                     
                     total_loss = l_rec*rec_loss + l_kld*kld_loss + l_orth*orth_loss + l_corr*corr_loss + l_jac*jac_loss  
                     total_loss.backward()
@@ -516,8 +787,11 @@ class ILLUMEplus(torch.nn.Module):
                 for batch, (X_batch, Y_batch) in enumerate(test_loader):
                     #with torch.no_grad():
 
+                    if X_batch.shape[0]==1:
+                        continue
+
                     self.model.zero_grad()
-                    rec_loss, kld_loss, orth_loss, corr_loss, jac_loss  = self._step(X_batch, Y_batch, k)
+                    rec_loss, kld_loss, orth_loss, corr_loss, jac_loss  = self._step(X_batch, Y_batch, k, False, lambdas)
                     
                     total_loss = l_rec*rec_loss + l_kld*kld_loss + l_orth*orth_loss + l_corr*corr_loss + l_jac*jac_loss  
                     
@@ -559,21 +833,61 @@ class ILLUMEplus(torch.nn.Module):
 
         return epoch_train_losses, epoch_val_losses
 
-    def transform(self, X, num_k_sparse=None):
+    def transform(self, X, num_k_sparse=None, return_decoder_weights=False):
+        """Encode feature rows with the fitted model.
+
+        Args:
+            X: Feature array of shape (n_samples, input_dim).
+            num_k_sparse: Optional retained coefficients per projection.
+            return_decoder_weights: Include unnormalized weights for decoding.
+
+        Returns:
+            Normalized weights (n, latent_dim, input_dim) and codes (n, latent_dim);
+            optionally also decoder weights of shape (n, latent_dim, input_dim).
+        """
         with torch.no_grad():
             self.model.eval()
             W, Z = self.model.encode(torch.tensor(X).float().to(device), num_k_sparse)
+            if return_decoder_weights:
+                decoder_weights = self.model.weight.cpu().detach().numpy()
+                return W.cpu().detach().numpy(), Z.cpu().detach().numpy(), decoder_weights
         return W.cpu().detach().numpy(), Z.cpu().detach().numpy() 
 
-    def inverse_transform(self, Z, W=None):
-        W = None if W is None else torch.tensor(W).float().to(device)
+    def inverse_transform(self, Z, decoder_weights):
+        """Decode latent rows using weights paired with those rows.
+
+        Args:
+            Z: Latent codes of shape (n_samples, latent_dim).
+            decoder_weights: Unnormalized weights returned by transform for Z.
+
+        Returns:
+            Reconstructed feature array of shape (n_samples, input_dim).
+        """
+        Z = torch.tensor(Z).float().to(device)
+        decoder_weights = torch.tensor(decoder_weights).float().to(device)
+        if Z.ndim != 2 or Z.shape[1] != self.latent_dim:
+            raise ValueError('Z must have shape (n_samples, latent_dim)')
+        expected_weights_shape = (Z.shape[0], self.latent_dim, self.input_dim)
+        if decoder_weights.shape != expected_weights_shape:
+            raise ValueError('decoder_weights must have shape (n_samples, latent_dim, input_dim)')
         with torch.no_grad():
             self.model.eval()
-            X = self.model.decode(torch.tensor(Z).float().to(device), W)
+            X = self.model.decode(Z, decoder_weights)
             X = torch.cat([ (X[:,idx]==X[:,idx].max(dim=1).values[:,None]).float() if len(idx)>1 else X[:,idx] for idx in self.idx_num_cat], axis=1)
-        return X.cpu().detach().numpy()
+        return X.cpu().detach().numpy() 
 
     def _latent_update(self, xi, xnn, Wi, Wnn, clf):
+
+        """Move a latent point toward an oppositely classified neighbor.
+
+        Args:
+            xi, xnn: Input feature rows for the point and neighbor.
+            Wi, Wnn: Their projection-weight matrices.
+            clf: Fitted classifier acting on latent codes.
+
+        Returns:
+            Updated latent code, projection weights, and input-induced latent shift.
+        """
 
         zi = np.matmul(Wi, xi)
         znn = np.matmul(Wnn, xnn)
@@ -590,13 +904,25 @@ class ILLUMEplus(torch.nn.Module):
         gridx = [0.]+list(np.logspace(-3, 0, 100))
         gridwx = random_combination(product(gridw, gridx), 2999)
 
-        for aw, ax in sorted(list(gridwx)+[(1.,1.)], key=lambda x: x[0]*x[1]):
+        for aw, ax in sorted(list(gridwx)+[(1.,1.)], key=lambda x: x[0]+x[1]):
             za = zi + aw*dzw + ax*dzx
             if clf.predict([za])!=yi:
                 return za, Wi+aw*(Wnn-Wi), ax*dzx
 
+        return za, Wnn, dzx
+
     
     def get_feature_importance(self, x_test, y_test_bb, class_label=1, num_k=None):
+
+        """Explain test rows with original-feature importance vectors.
+
+        Args:
+            x_test: Test feature rows; y_test_bb: black-box class labels.
+            class_label: Positive class; num_k: optional sparse coefficient count.
+
+        Returns:
+            List of importance vectors, or None where no explanation is found.
+        """
 
         y_test_bb = (y_test_bb==class_label).astype(int)
 
@@ -629,6 +955,16 @@ class ILLUMEplus(torch.nn.Module):
 
 
     def get_decision_rules(self, x_test, y_test_bb, class_label=1, num_k=None):
+
+        """Explain test rows with decoded decision rules.
+
+        Args:
+            x_test: Test feature rows; y_test_bb: black-box class labels.
+            class_label: Positive class; num_k: optional sparse coefficient count.
+
+        Returns:
+            List of rule dictionaries, or None where no rule is found.
+        """
 
         y_test_bb = (y_test_bb==class_label).astype(int)
 
@@ -663,6 +999,17 @@ class ILLUMEplus(torch.nn.Module):
         return ex_dict_test
 
     def get_counterfactuals(self, x_test, y_test_bb, class_label=1, num_k=None):
+
+        """Find counterfactual rules and training counter-examples for test rows.
+
+        Args:
+            x_test: Test feature rows; y_test_bb: black-box class labels.
+            class_label: Positive class; num_k: optional sparse coefficient count.
+
+        Returns:
+            Counterfactual rule dictionaries and matching training-row arrays;
+            individual list entries may be None when no counterfactual is found.
+        """
 
         y_test_bb = (y_test_bb==class_label).astype(int)
 

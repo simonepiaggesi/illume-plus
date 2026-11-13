@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mimosa-illume-plus"
+version = "0.1.0"
+description = "Post-hoc explanations for high-dimensional tabular/transcriptomics data using interpretable meta-encoding"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "Simone Piaggesi", email = "piaggesi.simone@gmail.com" }]
+dependencies = [
+    "numpy>=2.2.1",
+    "pandas>=2.2",
+    "scipy>=1.15.0",
+    "scikit-learn>=1.6.1",
+    "tqdm>=4.64.1",
+    "more-itertools>=10.5.0",
+    "torch>=2.7.1",
+]
+
+[project.optional-dependencies]
+notebook = [
+    "matplotlib>=3.8.0",
+    "ipykernel>=6.29.5",
+    "pyarrow>=20.0.0",
+]
+blackbox = [
+    "optuna>=4.6.0",
+    "lightgbm>=4.5.0",
+]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Repository = "https://github.com/simonepiaggesi/illume-plus"
+Paper = "https://doi.org/10.1145/3770855.3819010"
+
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/illume_plus"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
