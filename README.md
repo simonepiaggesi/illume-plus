@@ -11,8 +11,8 @@ The optional [transcriptomics preparation notebook](examples/load_transcriptomic
 shows how to regenerate one drug's `processed.pkl.gz` from
 `data/transcriptomics.feather` and the included split files. It selects the
 drug ID, applies the training scaler to all three splits, and saves the
-resulting dictionaries. The Feather file is not included; obtain it from
-[Zenodo](https://zenodo.org/records/18605674) and place it in `data/` before
+resulting dictionaries. The transcriptomics dataset (~2.1 GB) is available
+for [download](https://github.com/simonepiaggesi/illume-plus/releases/download/v0.1.1/transcriptomics.feather); place it in `data/` before
 running this preparation notebook.
 
 Paper: Martino Ciaperoni, Margherita Lalli, Simone Piaggesi, Martina Varisco, Francesco Carli, Riccardo Guidotti, Dino Pedreschi, Francesco Raimondi, Fosca Giannotti. "Explainable AI for Cancer Drug Response Prediction: Beyond Univariate Feature Attributions." In ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD) 2026. [[link]](https://dl.acm.org/doi/abs/10.1145/3770855.3819010/)
